@@ -1,16 +1,13 @@
 package io.circe.generic.extras
 
-import io.circe.{ AccumulatingDecoder, Decoder, HCursor, ObjectEncoder }
-import io.circe.export.Exported
-import io.circe.generic.ExportMacros
+import io.circe.{ AccumulatingDecoder, Decoder, HCursor }
 import io.circe.generic.decoding.{ DerivedDecoder, ReprDecoder }
-import io.circe.generic.encoding.DerivedObjectEncoder
-import scala.language.experimental.macros
-import shapeless.{ Coproduct, Default, HList, LabelledGeneric, Lazy, Witness }
+import io.circe.generic.extras.util.RecordToMap
+import shapeless.{ Coproduct, Default, HList, LabelledGeneric, Lazy }
 
 abstract class ConfiguredDecoder[A] extends DerivedDecoder[A]
 
-final object ConfiguredDecoder {
+final object ConfiguredDecoder extends IncompleteConfiguredDecoders {
   implicit def decodeCaseClass[A, R <: HList, D <: HList](implicit
     gen: LabelledGeneric.Aux[A, R],
     decode: Lazy[ReprDecoder[R]],
