@@ -121,10 +121,14 @@ class DerivationMacros(val c: whitebox.Context) {
           q"_root_.cats.data.Validated.valid(_root_.shapeless.HNil: _root_.shapeless.HNil)"
         )
       ) {
-        case (Member(name, nameTpe, tpe, _, _), instanceName, (acc, accumulatingAcc)) => (
+        case (Member(name, nameTpe, tpe, _, accTail), instanceName, (acc, accumulatingAcc)) => (
           q"""
-            _root_.io.circe.Decoder.resultInstance.map2(
-              orDefault(
+            _root_.io.circe.Decoder.resultInstance.map2[
+              $tpe,
+              $accTail,
+              _root_.shapeless.::[_root_.shapeless.labelled.FieldType[$nameTpe, $tpe], $accTail]
+            ](
+              orDefault[$tpe](
                 $instanceName.tryDecode(c.downField(transformKeys($name))),
                 $name,
                 defaults
@@ -133,8 +137,12 @@ class DerivationMacros(val c: whitebox.Context) {
             )((h, t) => _root_.shapeless.::(_root_.shapeless.labelled.field[$nameTpe].apply[$tpe](h), t))
           """,
           q"""
-            _root_.io.circe.AccumulatingDecoder.resultInstance.map2(
-              orDefaultAccumulating(
+            _root_.io.circe.AccumulatingDecoder.resultInstance.map2[
+              $tpe,
+              $accTail,
+              _root_.shapeless.::[_root_.shapeless.labelled.FieldType[$nameTpe, $tpe], $accTail]
+            ](
+              orDefaultAccumulating[$tpe](
                 $instanceName.tryDecodeAccumulating(c.downField(transformKeys($name))),
                 $name,
                 defaults
@@ -275,7 +283,7 @@ class DerivationMacros(val c: whitebox.Context) {
         cq"""
           _root_.shapeless.Inr($tailName) => $tailName match {
             case _root_.shapeless.Inl($currentName) =>
-              addDiscriminator($instanceName, $currentName, $name, discriminator)
+              addDiscriminator[$tpe]($instanceName, $currentName, $name, discriminator)
             case $acc
           }
         """
