@@ -1,6 +1,6 @@
 package io.circe.generic.extras
 
-import io.circe.{ Decoder, ObjectEncoder }
+import io.circe.{ Decoder, Encoder, ObjectEncoder }
 import io.circe.generic.decoding.ReprDecoder
 import io.circe.generic.extras.util.RecordToMap
 import io.circe.generic.util.PatchWithOptions
@@ -32,6 +32,22 @@ final object semiauto {
   final def deriveEncoder[A](implicit encode: Lazy[ConfiguredObjectEncoder[A]]): ObjectEncoder[A] = encode.value
 
   final def deriveFor[A]: DerivationHelper[A] = new DerivationHelper[A]
+
+  /**
+   * Derive a decoder for a sealed trait hierarchy made up of case objects.
+   *
+   * Note that this differs from the usual derived decoder in that the leaves of
+   * the ADT are represented as JSON strings.
+   */
+  def deriveEnumerationDecoder[A](implicit decode: Lazy[EnumerationDecoder[A]]): Decoder[A] = decode.value
+
+  /**
+   * Derive an encoder for a sealed trait hierarchy made up of case objects.
+   *
+   * Note that this differs from the usual derived encoder in that the leaves of
+   * the ADT are represented as JSON strings.
+   */
+  def deriveEnumerationEncoder[A](implicit encode: Lazy[EnumerationEncoder[A]]): Encoder[A] = encode.value
 
   final class DerivationHelper[A] {
     final def incomplete[P <: HList, C, D <: HList, T <: HList, R <: HList](implicit
