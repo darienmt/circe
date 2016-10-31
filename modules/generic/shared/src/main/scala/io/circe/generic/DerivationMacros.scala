@@ -24,7 +24,7 @@ class DerivationMacros(val c: whitebox.Context) {
    * Represents an element at the head of a `shapeless.HList` or
    * `shapeless.Coproduct`.
    */
-  case class Member(label: String, keyType: Type, valueType: Type, acc: Type)
+  case class Member(label: String, keyType: Type, valueType: Type, acc: Type, accTail: Type)
 
   /**
    * Represents an `shapeless.HList` or `shapeless.Coproduct` type in a way
@@ -37,7 +37,7 @@ class DerivationMacros(val c: whitebox.Context) {
      */
     def fold[Z](resolver: Type => Tree)(init: Z)(f: (Member, TermName, Z) => Z): (List[Tree], Z) = {
       val (instanceMap, result) = underlying.foldRight((Map.empty[Type, (TermName, Tree)], init)) {
-        case (member @ Member(_, _, valueType, _), (instanceMap, acc)) =>
+        case (member @ Member(_, _, valueType, _, _), (instanceMap, acc)) =>
           val (instanceName, instance) = instanceMap.getOrElse(valueType, (TermName(c.freshName), resolver(valueType)))
           val newInstances = instanceMap.updated(valueType, (instanceName, instance))
 
@@ -86,7 +86,7 @@ class DerivationMacros(val c: whitebox.Context) {
       case acc @ TypeRef(ThisType(ShapelessSym), HConsSym | CConsSym, List(fieldType, tailType)) =>
         fieldType match {
           case Entry(label, keyType, valueType) => fromType(tailType).map(members =>
-            new Members(Member(label, keyType, valueType, acc) :: members.underlying)
+            new Members(Member(label, keyType, valueType, acc, tailType) :: members.underlying)
           )
           case _ => None
         }
@@ -121,16 +121,24 @@ class DerivationMacros(val c: whitebox.Context) {
           q"_root_.cats.data.Validated.valid(_root_.shapeless.HNil: _root_.shapeless.HNil)"
         )
       ) {
-        case (Member(name, nameTpe, tpe, _), instanceName, (acc, accumulatingAcc)) => (
+        case (Member(name, nameTpe, tpe, _, _), instanceName, (acc, accumulatingAcc)) => (
           q"""
             _root_.io.circe.Decoder.resultInstance.map2(
-              $instanceName.tryDecode(c.downField($name)),
+              orDefault(
+                $instanceName.tryDecode(c.downField(transformKeys($name))),
+                $name,
+                defaults
+              ),
               $acc
             )((h, t) => _root_.shapeless.::(_root_.shapeless.labelled.field[$nameTpe].apply[$tpe](h), t))
           """,
           q"""
             _root_.io.circe.AccumulatingDecoder.resultInstance.map2(
-              $instanceName.tryDecodeAccumulating(c.downField($name)),
+              orDefaultAccumulating(
+                $instanceName.tryDecodeAccumulating(c.downField(transformKeys($name))),
+                $name,
+                defaults
+              ),
               $accumulatingAcc
             )((h, t) => _root_.shapeless.::(_root_.shapeless.labelled.field[$nameTpe].apply[$tpe](h), t))
           """
@@ -142,9 +150,19 @@ class DerivationMacros(val c: whitebox.Context) {
           {
             new _root_.io.circe.generic.decoding.ReprDecoder[$R] {
               ..$instanceDefs
-              final def apply(c: _root_.io.circe.HCursor): _root_.io.circe.Decoder.Result[$R] = $result
-              override final def decodeAccumulating(
+
+              final def configuredDecode(c: _root_.io.circe.HCursor)(
+                transformKeys: _root_.java.lang.String => _root_.java.lang.String,
+                defaults: _root_.scala.collection.immutable.Map[_root_.java.lang.String, _root_.scala.Any],
+                discriminator: _root_.scala.Option[_root_.java.lang.String]
+              ): _root_.io.circe.Decoder.Result[$R] = $result
+
+              final def configuredDecodeAccumulating(
                 c: _root_.io.circe.HCursor
+              )(
+                transformKeys: _root_.java.lang.String => _root_.java.lang.String,
+                defaults: _root_.scala.collection.immutable.Map[_root_.java.lang.String, _root_.scala.Any],
+                discriminator: _root_.scala.Option[_root_.java.lang.String]
               ): _root_.io.circe.AccumulatingDecoder.Result[$R] = $accumulatingResult
             }: _root_.io.circe.generic.decoding.ReprDecoder[$R]
           }
@@ -171,35 +189,16 @@ class DerivationMacros(val c: whitebox.Context) {
       )(
         (cnilEitherFailure, cnilValidatedNelFailure)
       ) {
-        case (Member(name, nameTpe, tpe, current), instanceName, (acc, accumulatingAcc)) => (
+        case (Member(name, nameTpe, tpe, current, accTail), instanceName, (acc, accumulatingAcc)) => (
+          q"withDiscriminator[$nameTpe, $tpe, $accTail]($instanceName, c, $acc, $name, discriminator)",
           q"""
-            {
-              val result = c.downField($name)
-
-              if (result.succeeded) {
-                $instanceName.tryDecode(result) match {
-                  case _root_.scala.util.Right(a) =>
-                    _root_.scala.util.Right(
-                      _root_.shapeless.Inl(_root_.shapeless.labelled.field[$nameTpe].apply[$tpe](a))
-                    )
-                  case l @ _root_.scala.util.Left(_) => l.asInstanceOf[_root_.io.circe.Decoder.Result[$current]]
-                }
-              } else {
-                $acc match {
-                  case _root_.scala.util.Right(last) => _root_.scala.util.Right(_root_.shapeless.Inr(last): $current)
-                  case l @ _root_.scala.util.Left(_) => l.asInstanceOf[_root_.io.circe.Decoder.Result[$current]]
-                }
-              }
-            }
-          """,
-          q"""
-            {
-              val result = c.downField($name)
-
-              if (result.succeeded) $instanceName.tryDecodeAccumulating(result).map(a =>
-                _root_.shapeless.Inl(_root_.shapeless.labelled.field[$nameTpe].apply[$tpe](a))
-              ) else $accumulatingAcc.map(last => _root_.shapeless.Inr(last): $current)
-            }
+            withDiscriminatorAccumulating[$nameTpe, $tpe, $accTail](
+              $instanceName,
+              c,
+              $accumulatingAcc,
+              $name,
+              discriminator
+            )
           """
         )
       }
@@ -209,9 +208,18 @@ class DerivationMacros(val c: whitebox.Context) {
           {
             new _root_.io.circe.generic.decoding.ReprDecoder[$R] {
               ..$instanceDefs
-              final def apply(c: _root_.io.circe.HCursor): _root_.io.circe.Decoder.Result[$R] = $result
-              override final def decodeAccumulating(
+              final def configuredDecode(c: _root_.io.circe.HCursor)(
+                transformKeys: _root_.java.lang.String => _root_.java.lang.String,
+                defaults: _root_.scala.collection.immutable.Map[_root_.java.lang.String, _root_.scala.Any],
+                discriminator: _root_.scala.Option[_root_.java.lang.String]
+              ): _root_.io.circe.Decoder.Result[$R] = $result
+
+              final def configuredDecodeAccumulating(
                 c: _root_.io.circe.HCursor
+              )(
+                transformKeys: _root_.java.lang.String => _root_.java.lang.String,
+                defaults: _root_.scala.collection.immutable.Map[_root_.java.lang.String, _root_.scala.Any],
+                discriminator: _root_.scala.Option[_root_.java.lang.String]
               ): _root_.io.circe.AccumulatingDecoder.Result[$R] = $accumulatingResult
             }: _root_.io.circe.generic.decoding.ReprDecoder[$R]
           }
@@ -226,10 +234,13 @@ class DerivationMacros(val c: whitebox.Context) {
       )(
         (pq"_root_.shapeless.HNil": Tree, List.empty[Tree])
       ) {
-        case (Member(name, _, tpe, _), instanceName, (patternAcc, fieldsAcc)) =>
+        case (Member(name, _, tpe, _, _), instanceName, (patternAcc, fieldsAcc)) =>
         val currentName = TermName(c.freshName)
 
-        (pq"_root_.shapeless.::($currentName, $patternAcc)", q"($name, $instanceName.apply($currentName))" :: fieldsAcc)
+        (
+          pq"_root_.shapeless.::($currentName, $patternAcc)",
+          q"(transformKeys($name), $instanceName.apply($currentName))" :: fieldsAcc
+        )
       }
 
       c.Expr[ReprObjectEncoder[R]](
@@ -237,7 +248,10 @@ class DerivationMacros(val c: whitebox.Context) {
           {
             new _root_.io.circe.generic.encoding.ReprObjectEncoder[$R] {
               ..$instanceDefs
-              final def encodeObject(a: $R): _root_.io.circe.JsonObject = a match {
+              final def configuredEncodeObject(a: $R)(
+                transformKeys: _root_.java.lang.String => _root_.java.lang.String,
+                discriminator: _root_.scala.Option[_root_.java.lang.String]
+              ): _root_.io.circe.JsonObject = a match {
                 case $pattern =>
                   _root_.io.circe.JsonObject.fromIterable(_root_.scala.collection.immutable.Vector(..$fields))
               }
@@ -254,14 +268,14 @@ class DerivationMacros(val c: whitebox.Context) {
       )(
         cq"""_root_.shapeless.Inr(_) => _root_.scala.sys.error("Cannot encode CNil")"""
       ) {
-        case (Member(name, _, tpe, _), instanceName, acc) =>
+        case (Member(name, _, tpe, _, _), instanceName, acc) =>
         val tailName = TermName(c.freshName)
         val currentName = TermName(c.freshName)
 
         cq"""
           _root_.shapeless.Inr($tailName) => $tailName match {
             case _root_.shapeless.Inl($currentName) =>
-              _root_.io.circe.JsonObject.singleton($name, $instanceName.apply($currentName))
+              addDiscriminator($instanceName, $currentName, $name, discriminator)
             case $acc
           }
         """
@@ -272,8 +286,10 @@ class DerivationMacros(val c: whitebox.Context) {
           {
             new _root_.io.circe.generic.encoding.ReprObjectEncoder[$R] {
               ..$instanceDefs
-
-              final def encodeObject(a: $R): _root_.io.circe.JsonObject = _root_.shapeless.Inr(a) match {
+              final def configuredEncodeObject(a: $R)(
+                transformKeys: _root_.java.lang.String => _root_.java.lang.String,
+                discriminator: _root_.scala.Option[_root_.java.lang.String]
+              ): _root_.io.circe.JsonObject = _root_.shapeless.Inr(a) match {
                 case $patternAndCase
               }
             }: _root_.io.circe.generic.encoding.ReprObjectEncoder[$R]
