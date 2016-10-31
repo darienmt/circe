@@ -29,9 +29,7 @@ import shapeless.ops.record.RemoveAll
  */
 final object semiauto {
   final def deriveDecoder[A](implicit decode: Lazy[DerivedDecoder[A]]): Decoder[A] = decode.value
-
-  final def deriveEncoder[A](implicit encode: Lazy[DerivedObjectEncoder[A]]): ObjectEncoder[A] =
-    encode.value
+  final def deriveEncoder[A](implicit encode: Lazy[DerivedObjectEncoder[A]]): ObjectEncoder[A] = encode.value
 
   final def deriveFor[A]: DerivationHelper[A] = new DerivationHelper[A]
 
